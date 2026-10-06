@@ -40,7 +40,9 @@ RUN set -eux; \
 FROM scratch
 
 COPY --from=runtime-root /runtime-root /
-COPY channels.yaml /app/channels.yaml
+# Built-in default at a shadow-proof path; entrypoint logic in the binary
+# auto-seeds it to the --channels path when that path is empty/missing.
+COPY channels.yaml /app/default-channels.yaml
 WORKDIR /app
 
 EXPOSE 8787

@@ -105,6 +105,63 @@ struct NoticeCacheItem {
     ttl_ms: u128,
 }
 
+/// Resolve the channels YAML path, auto-seeding from the built-in default when sensible.
+///
+/// Built-in default lives at /app/default-channels.yaml (a path users never bind-mount).
+/// - Valid non-empty file -> use directly (built-in default when unmounted,
+///   or a user-provided file bind mount).
+/// - Empty file (e.g. `touch`ed then bind-mounted) -> seed from built-in, then use it.
+/// - Directory (Docker auto-creates a dir when the host path of a file bind mount
+///   is missing) -> seed `<dir>/channels.yaml` from built-in if absent, then use it.
+/// - Anything else -> fall back to the built-in default.
+fn resolve_channels_path(path: &std::path::Path) -> PathBuf {
+    const BUILT_IN: &str = "/app/default-channels.yaml";
+
+    // Case 1: usable file.
+    if path.is_file() {
+        let non_empty = path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+        if non_empty {
+            return path.to_path_buf();
+        }
+        // Case 2: empty file -> seed it from the built-in default (writes through to host).
+        if let Ok(content) = std::fs::read(BUILT_IN) {
+            if std::fs::write(path, content).is_ok() {
+                info!("seeded built-in channels.yaml to {}", path.display());
+                return path.to_path_buf();
+            }
+        }
+        warn!(
+            "cannot seed {}, falling back to built-in default",
+            path.display()
+        );
+        return PathBuf::from(BUILT_IN);
+    }
+
+    // Case 3: directory (e.g. Docker created one for a missing host file) ->
+    // seed channels.yaml inside it so the host ends up with a usable file.
+    if path.is_dir() {
+        let seeded = path.join("channels.yaml");
+        if !seeded.exists() {
+            if let Ok(content) = std::fs::read(BUILT_IN) {
+                if std::fs::write(&seeded, content).is_ok() {
+                    info!("seeded built-in channels.yaml to {}", seeded.display());
+                }
+            }
+        }
+        if seeded.is_file() {
+            return seeded;
+        }
+        warn!(
+            "{} is a directory, falling back to built-in default",
+            path.display()
+        );
+        return PathBuf::from(BUILT_IN);
+    }
+
+    // Case 4: missing/unusable -> built-in default.
+    PathBuf::from(BUILT_IN)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -118,7 +175,7 @@ async fn main() -> Result<()> {
     let live = LiveClient::new()?;
     let media = MediaPipeline::new(live.clone())?;
     let state = AppState {
-        channels_path: args.channels.clone(),
+        channels_path: resolve_channels_path(&args.channels),
         live,
         media,
         notice_cache: Arc::new(Mutex::new(HashMap::new())),
