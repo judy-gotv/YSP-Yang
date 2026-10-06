@@ -1,0 +1,45 @@
+FROM rust:1.87-bookworm AS builder
+
+WORKDIR /src
+COPY rust-src/Cargo.toml ./Cargo.toml
+COPY rust-src/src ./src
+COPY rust-src/assets ./assets
+RUN cargo build --release
+
+FROM builder AS runtime-root
+
+RUN set -eux; \
+  mkdir -p /runtime-root/app /runtime-root/tmp /runtime-root/etc/ssl/certs; \
+  cp /src/target/release/iptv-rust /runtime-root/app/iptv-rust; \
+  readelf -d /src/target/release/iptv-rust \
+    | awk -F'[][]' '/NEEDED/ { print $2 }' \
+    | while read -r needed; do \
+        lib="$(find /lib /usr/lib \( -type f -o -type l \) -name "$needed" 2>/dev/null | head -n 1)"; \
+        test -n "$lib"; \
+        mkdir -p "/runtime-root$(dirname "$lib")"; \
+        cp -L "$lib" "/runtime-root$lib"; \
+      done; \
+  for extra in libnss_dns.so.2 libnss_files.so.2 libresolv.so.2; do \
+        lib="$(find /lib /usr/lib \( -type f -o -type l \) -name "$extra" 2>/dev/null | head -n 1)"; \
+        if [ -n "$lib" ]; then \
+          mkdir -p "/runtime-root$(dirname "$lib")"; \
+          cp -L "$lib" "/runtime-root$lib"; \
+        fi; \
+      done; \
+  interp="$(readelf -l /src/target/release/iptv-rust | awk -F': ' '/interpreter/ { gsub(/]/, "", $2); print $2 }')"; \
+  mkdir -p "/runtime-root$(dirname "$interp")"; \
+  cp -L "$interp" "/runtime-root$interp"; \
+  cp /etc/ssl/certs/ca-certificates.crt /runtime-root/etc/ssl/certs/ca-certificates.crt; \
+  printf 'hosts: files dns\n' > /runtime-root/etc/nsswitch.conf; \
+  chmod 0755 /runtime-root/app/iptv-rust; \
+  chmod 1777 /runtime-root/tmp
+
+FROM scratch
+
+COPY --from=runtime-root /runtime-root /
+COPY channels.yaml /app/channels.yaml
+WORKDIR /app
+
+EXPOSE 8787
+ENTRYPOINT ["/app/iptv-rust"]
+CMD ["--host", "0.0.0.0", "--port", "8787", "--channels", "/app/channels.yaml"]
