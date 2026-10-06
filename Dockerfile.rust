@@ -2,9 +2,10 @@ FROM rust:1.87-bookworm AS builder
 
 WORKDIR /src
 COPY rust-src/Cargo.toml ./Cargo.toml
+COPY rust-src/Cargo.lock ./Cargo.lock
 COPY rust-src/src ./src
 COPY rust-src/assets ./assets
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM builder AS runtime-root
 
