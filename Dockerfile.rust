@@ -5,10 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 
 WORKDIR /src
 COPY rust-src/Cargo.toml ./Cargo.toml
-COPY rust-src/Cargo.lock ./Cargo.lock
 COPY rust-src/src ./src
 COPY rust-src/assets ./assets
-RUN cargo build --release --locked
+RUN cargo build --release
 
 FROM builder AS runtime-root
 
