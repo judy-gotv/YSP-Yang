@@ -18,6 +18,10 @@
 
 ```bash
 docker pull ghcr.io/judy-gotv/ysp-yang:latest
+
+注意  注意 一点要先拉取 
+curl -o /opt/channels.yaml https://raw.githubusercontent.com/judy-gotv/YSP-Yang/main/channels.yaml
+
 docker run -d --name ysp-yang -p 8787:8787 ghcr.io/judy-gotv/ysp-yang:latest
 ```
 
@@ -26,10 +30,10 @@ docker run -d --name ysp-yang -p 8787:8787 ghcr.io/judy-gotv/ysp-yang:latest
 自定义端口 / 频道表：
 
 ```bash
-docker run -d --name ysp-yang -p 8080:8080 \
-  -v /path/to/channels.yaml:/app/channels.yaml \
-  ghcr.io/judy-gotv/ysp-yang:latest \
-  --host 0.0.0.0 --port 8080 --channels /app/channels.yaml
+docker run -d --name ysp-yang -p 19980:8787 \
+  -v /opt/channels.yaml:/app/channels.yaml \
+  ghcr.io/judy-gotv/ysp-yang:latest
+
 ```
 
 ## 本地构建
