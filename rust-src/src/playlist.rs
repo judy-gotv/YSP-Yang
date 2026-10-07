@@ -2,7 +2,7 @@ use axum::http::{HeaderMap, Uri};
 
 use crate::{
     config::Channel,
-    constants::EPG_URL,
+    constants::{EPG_URL, NOTICE_LOGO_URL, NOTICE_URL},
     prefix::{abs_url, append_recursive_prefix},
 };
 
@@ -17,10 +17,14 @@ pub fn m3u_escape(value: impl AsRef<str>) -> String {
 }
 
 pub fn build_list_m3u(headers: &HeaderMap, uri: &Uri, channels: &[Channel]) -> String {
-    let mut lines = vec![format!(
-        "#EXTM3U x-tvg-url=\"{}\"",
-        m3u_escape(EPG_URL)
-    )];
+    let mut lines = vec![
+        format!("#EXTM3U x-tvg-url=\"{}\"", m3u_escape(EPG_URL)),
+        format!(
+            "#EXTINF:-1 tvg-name=\"注意事项\" tvg-logo=\"{}\" group-title=\"注意事项\",注意事项",
+            m3u_escape(NOTICE_LOGO_URL)
+        ),
+        NOTICE_URL.to_string(),
+    ];
     for channel in channels {
         let name = channel.display_name();
         lines.push(format!(

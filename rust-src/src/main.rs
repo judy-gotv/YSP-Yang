@@ -14,6 +14,7 @@ mod ts_decrypt;
 mod ts_remux;
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -24,7 +25,7 @@ use anyhow::Result;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
     Json, Router,
 };
@@ -36,7 +37,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::ChannelDirectory,
-    constants::{DEFAULT_HOST, DEFAULT_PORT},
+    constants::{DEFAULT_HOST, DEFAULT_PORT, NOTICE_CACHE_TTL_MS, NOTICE_URL},
     live::LiveClient,
     media::MediaPipeline,
     playlist::build_list_m3u,
@@ -60,6 +61,7 @@ struct AppState {
     channels_path: PathBuf,
     live: LiveClient,
     media: MediaPipeline,
+    notice_cache: Arc<Mutex<HashMap<String, u128>>>,
     stats: Arc<Mutex<Stats>>,
 }
 
@@ -79,6 +81,7 @@ struct Health {
     mode: &'static str,
     stats: Stats,
     channels: ChannelHealth,
+    notice: NoticeHealth,
     api_flow: flow::FlowSnapshot,
     routes: Vec<&'static str>,
 }
@@ -87,6 +90,19 @@ struct Health {
 struct ChannelHealth {
     path: String,
     count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct NoticeHealth {
+    url: &'static str,
+    ttl_ms: u64,
+    cache: HashMap<String, NoticeCacheItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct NoticeCacheItem {
+    expires_at_ms: u128,
+    ttl_ms: u128,
 }
 
 /// Resolve the channels YAML path, auto-seeding from the built-in default when sensible.
@@ -162,6 +178,7 @@ async fn main() -> Result<()> {
         channels_path: resolve_channels_path(&args.channels),
         live,
         media,
+        notice_cache: Arc::new(Mutex::new(HashMap::new())),
         stats: Arc::new(Mutex::new(Stats {
             started_at_ms: now_ms(),
             ..Stats::default()
@@ -204,6 +221,20 @@ async fn health(State(state): State<AppState>) -> Response {
             );
         }
     };
+    let now = now_ms();
+    let notice_cache = state.notice_cache.lock().await;
+    let notice = notice_cache
+        .iter()
+        .map(|(ch, expires_at)| {
+            (
+                ch.clone(),
+                NoticeCacheItem {
+                    expires_at_ms: *expires_at,
+                    ttl_ms: expires_at.saturating_sub(now),
+                },
+            )
+        })
+        .collect();
     let api_flow = state.live.flow.snapshot().await;
     let mut stats = state.stats.lock().await.clone();
     stats.live_info_fetches = api_flow.stats.completed;
@@ -214,6 +245,11 @@ async fn health(State(state): State<AppState>) -> Response {
         channels: ChannelHealth {
             path: directory.path.display().to_string(),
             count: directory.channels.len(),
+        },
+        notice: NoticeHealth {
+            url: NOTICE_URL,
+            ttl_ms: NOTICE_CACHE_TTL_MS,
+            cache: notice,
         },
         api_flow,
         routes: vec![
@@ -275,19 +311,14 @@ async fn live_playlist(
     }
     let directory = match load_channels(&state) {
         Ok(value) => value,
-        Err(error) => {
-            return json_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({ "ok": false, "error": error.to_string() }),
-            )
-        }
+        Err(error) => return temporary_notice(&state, ch, error).await,
     };
     let Some(channel) = directory.resolve_ch(&ch) else {
-        return json_status(
-            StatusCode::NOT_FOUND,
-            serde_json::json!({ "ok": false, "error": "not found" }),
-        );
+        return Redirect::temporary(NOTICE_URL).into_response();
     };
+    if notice_cached(&state, &channel.ch).await {
+        return Redirect::temporary(NOTICE_URL).into_response();
+    }
     match state
         .media
         .local_ts_playlist(&channel, &headers, &uri)
@@ -298,10 +329,7 @@ async fn live_playlist(
             "application/vnd.apple.mpegurl; charset=utf-8",
             text,
         ),
-        Err(error) => json_status(
-            StatusCode::BAD_GATEWAY,
-            serde_json::json!({ "ok": false, "error": error.to_string() }),
-        ),
+        Err(error) => temporary_notice(&state, &channel.ch, error).await,
     }
 }
 
@@ -329,10 +357,7 @@ async fn segment(
         }
     };
     let Some(channel) = directory.resolve_ch(&ch) else {
-        return json_status(
-            StatusCode::NOT_FOUND,
-            serde_json::json!({ "ok": false, "error": "not found" }),
-        );
+        return Redirect::temporary(NOTICE_URL).into_response();
     };
     match state.media.segment(&channel, id).await {
         Ok(body) => {
@@ -368,6 +393,29 @@ fn strip_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
 
 fn load_channels(state: &AppState) -> Result<ChannelDirectory> {
     ChannelDirectory::load(&state.channels_path)
+}
+
+async fn notice_cached(state: &AppState, ch: &str) -> bool {
+    let now = now_ms();
+    let mut cache = state.notice_cache.lock().await;
+    let key = ch.to_ascii_lowercase();
+    if let Some(expires_at) = cache.get(&key).copied() {
+        if expires_at > now {
+            return true;
+        }
+        cache.remove(&key);
+    }
+    false
+}
+
+async fn temporary_notice(state: &AppState, ch: &str, error: anyhow::Error) -> Response {
+    warn!(channel = %ch, error = %error, "temporary notice fallback");
+    let mut cache = state.notice_cache.lock().await;
+    cache.insert(
+        ch.to_ascii_lowercase(),
+        now_ms() + NOTICE_CACHE_TTL_MS as u128,
+    );
+    Redirect::temporary(NOTICE_URL).into_response()
 }
 
 fn text_response(status: StatusCode, content_type: &'static str, text: String) -> Response {
