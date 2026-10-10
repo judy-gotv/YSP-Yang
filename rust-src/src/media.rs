@@ -185,7 +185,7 @@ impl MediaPipeline {
                 );
                 lines.push(append_recursive_prefix(uri, &url));
             }
-            trim_map(&mut state.segments, 512);
+            trim_map(&mut state.segments, 512, |_, segment| segment.sequence);
         }
         Ok(format!("{}\n", lines.join("\n")))
     }
@@ -378,7 +378,11 @@ impl MediaPipeline {
         runtime
             .processed
             .insert(segment.sequence, processed.clone());
-        trim_map(&mut runtime.processed, MEDIA_HISTORY_MAX_SEGMENTS);
+        trim_map(
+            &mut runtime.processed,
+            MEDIA_HISTORY_MAX_SEGMENTS,
+            |sequence, _| *sequence,
+        );
         runtime.last_processed_sequence = Some(
             runtime
                 .last_processed_sequence
@@ -610,12 +614,27 @@ fn segment_sequence_id(livepid: &str, sequence: i64) -> String {
     hex::encode(digest)[..20].to_string()
 }
 
-fn trim_map<K, V>(map: &mut HashMap<K, V>, max_size: usize)
+/// Evict entries until `map` fits `max_size`, removing the entry with the
+/// smallest `order_key` (oldest segment) first.
+///
+/// `HashMap` iteration order is arbitrary, so evicting `keys().next()` would
+/// delete a random segment -- possibly one the player is about to request.
+fn trim_map<K, V, F>(map: &mut HashMap<K, V>, max_size: usize, order_key: F)
 where
     K: Eq + std::hash::Hash + Clone,
+    F: Fn(&K, &V) -> i64,
 {
     while map.len() > max_size {
-        let Some(key) = map.keys().next().cloned() else {
+        let mut victim: Option<K> = None;
+        let mut victim_order = i64::MAX;
+        for (key, value) in map.iter() {
+            let order = order_key(key, value);
+            if order < victim_order {
+                victim_order = order;
+                victim = Some(key.clone());
+            }
+        }
+        let Some(key) = victim else {
             break;
         };
         map.remove(&key);
@@ -680,5 +699,30 @@ mod tests {
         assert_eq!(parsed.segments[0].sequence, 10);
         assert_eq!(parsed.segments[1].sequence, 11);
         assert_eq!(parsed.segments[0].url, "https://example.com/live/a.ts");
+    }
+
+    #[test]
+    fn trim_map_evicts_smallest_order_first() {
+        // Key-ordered (like runtime.processed: sequence -> payload).
+        let mut by_key: HashMap<i64, i64> = HashMap::new();
+        by_key.insert(30, 300);
+        by_key.insert(10, 100);
+        by_key.insert(20, 200);
+        trim_map(&mut by_key, 2, |key, _| *key);
+        assert_eq!(by_key.len(), 2);
+        assert!(!by_key.contains_key(&10));
+        assert!(by_key.contains_key(&20));
+        assert!(by_key.contains_key(&30));
+
+        // Value-ordered (like state.segments: id -> SegmentRef with .sequence).
+        let mut by_value: HashMap<String, i64> = HashMap::new();
+        by_value.insert("newer".to_string(), 30);
+        by_value.insert("oldest".to_string(), 10);
+        by_value.insert("middle".to_string(), 20);
+        trim_map(&mut by_value, 2, |_, value| *value);
+        assert_eq!(by_value.len(), 2);
+        assert!(!by_value.contains_key("oldest"));
+        assert!(by_value.contains_key("middle"));
+        assert!(by_value.contains_key("newer"));
     }
 }

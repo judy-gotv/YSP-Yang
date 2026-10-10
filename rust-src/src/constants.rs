@@ -17,8 +17,8 @@ pub const LIVE_SECRET: &str = "0f$IVHi9Qno?G";
 pub const CKEY_AES_KEY_HEX: &str = "48e5918a74ae21c972b90cce8af6c8be";
 pub const CKEY_AES_IV_HEX: &str = "9a7e7d23610266b1d9fbf98581384d92";
 
-pub const NOTICE_URL: &str = "https://cdn.jsdelivr.net/gh/jkwu5472/first/media.m3u8";
-pub const NOTICE_LOGO_URL: &str = "https://cdn.jsdelivr.net/gh/jkwu5472/first/notice.jpg";
+pub const NOTICE_URL: &str = "https://cdn.jsdelivr.net/gh/passwdword8888/mpdhls/first/media.m3u8";
+pub const NOTICE_LOGO_URL: &str = "https://cdn.jsdelivr.net/gh/passwdword8888/mpdhls/first/notice.jpg";
 pub const EPG_URL: &str = "https://epg.zsdc.eu.org/t.xml";
 
 pub const M3U8_REFRESH_AFTER_MS: u64 = 60_000;
