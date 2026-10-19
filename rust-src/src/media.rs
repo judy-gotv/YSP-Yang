@@ -22,7 +22,8 @@ use crate::{
     config::Channel,
     constants::{
         ACTIVE_URL, MEDIA_HISTORY_MAX_SEGMENTS, MEDIA_LIVE_EDGE_HOLDBACK_SEGMENTS,
-        MEDIA_PLAYLIST_WINDOW_SEGMENTS, USER_AGENT,
+        MEDIA_PLAYLIST_WINDOW_SEGMENTS, MEDIA_PROCESSED_MAX_SEGMENTS, RUNTIME_IDLE_TTL_MS,
+        USER_AGENT,
     },
     live::LiveClient,
     prefix::{abs_url, append_recursive_prefix},
@@ -62,6 +63,7 @@ struct ChannelRuntime {
     processed: HashMap<i64, ProcessedSegment>,
     last_processed_sequence: Option<i64>,
     reset_count: u64,
+    last_used_ms: u128,
 }
 
 #[derive(Clone)]
@@ -186,6 +188,7 @@ impl MediaPipeline {
                 lines.push(append_recursive_prefix(uri, &url));
             }
             trim_map(&mut state.segments, 512, |_, segment| segment.sequence);
+            evict_idle_runtimes(&mut state);
         }
         Ok(format!("{}\n", lines.join("\n")))
     }
@@ -200,6 +203,7 @@ impl MediaPipeline {
             return Err(anyhow!("segment does not belong to channel"));
         }
         let runtime = self.runtime_for_channel(&segment.livepid).await?;
+        runtime.lock().await.last_used_ms = now_ms();
         let bytes = self.process_segment(runtime, segment).await?;
         Ok(Body::from(bytes))
     }
@@ -223,6 +227,7 @@ impl MediaPipeline {
             processed: HashMap::new(),
             last_processed_sequence: None,
             reset_count: 0,
+            last_used_ms: now_ms(),
         }));
         let mut state = self.state.lock().await;
         Ok(state
@@ -380,7 +385,7 @@ impl MediaPipeline {
             .insert(segment.sequence, processed.clone());
         trim_map(
             &mut runtime.processed,
-            MEDIA_HISTORY_MAX_SEGMENTS,
+            MEDIA_PROCESSED_MAX_SEGMENTS,
             |sequence, _| *sequence,
         );
         runtime.last_processed_sequence = Some(
@@ -639,6 +644,42 @@ where
         };
         map.remove(&key);
     }
+}
+
+/// Drop channel runtimes (wasmtime engine + decrypted segments) that have
+/// not served a segment for longer than RUNTIME_IDLE_TTL_MS. Keeps memory
+/// bounded on small devices when users zap across many channels.
+fn evict_idle_runtimes(state: &mut MediaState) {
+    let now = now_ms();
+    let mut evicted = 0usize;
+    state.runtimes.retain(|livepid, runtime| {
+        let idle = match runtime.try_lock() {
+            // Locked by an in-flight request: keep it.
+            Err(_) => false,
+            Ok(rt) => now.saturating_sub(rt.last_used_ms) > RUNTIME_IDLE_TTL_MS,
+        };
+        if idle {
+            evicted += 1;
+            tracing::debug!(livepid = %livepid, "evicted idle channel runtime");
+            false
+        } else {
+            true
+        }
+    });
+    if evicted > 0 {
+        tracing::info!(
+            evicted,
+            remaining = state.runtimes.len(),
+            "evicted idle channel runtimes"
+        );
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis()
 }
 
 fn new_media_tag_id() -> String {

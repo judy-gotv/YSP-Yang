@@ -29,6 +29,13 @@ pub const MEDIA_PLAYLIST_SNAPSHOT_TTL_MS: u64 = 4_000;
 pub const MEDIA_PLAYLIST_WINDOW_SEGMENTS: usize = 12;
 pub const MEDIA_HISTORY_MAX_SEGMENTS: usize = 36;
 pub const MEDIA_LIVE_EDGE_HOLDBACK_SEGMENTS: usize = 1;
+/// Cap for decrypted+remuxed segment bytes kept per channel. The served
+/// playlist window is MEDIA_PLAYLIST_WINDOW_SEGMENTS; 16 leaves headroom
+/// for retries without hoarding tens of MB per channel.
+pub const MEDIA_PROCESSED_MAX_SEGMENTS: usize = 16;
+/// Channel runtimes (wasmtime engine + decrypted segments) idle longer
+/// than this are dropped to bound memory on small devices.
+pub const RUNTIME_IDLE_TTL_MS: u128 = 600_000;
 
 pub const API_FLOW_CONCURRENCY: usize = 1;
 pub const API_FLOW_MIN_INTERVAL_MS: u64 = 900;
