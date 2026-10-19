@@ -158,12 +158,16 @@ pub struct CmgRuntime {
 static SHARED_ENGINE_MODULE: OnceLock<(Engine, wasmtime::Module)> = OnceLock::new();
 
 fn shared_engine_module() -> Result<&'static (Engine, wasmtime::Module)> {
-    SHARED_ENGINE_MODULE.get_or_try_init(|| {
-        let engine = Engine::default();
-        let wasm = embedded_cmg_worker_wasm()?;
-        let module = wasmtime::Module::from_binary(&engine, &wasm)?;
-        Ok((engine, module))
-    })
+    // Note: OnceLock::get_or_try_init is NOT stable (rust#109737); use the
+    // stable get() + get_or_init() pair instead. The race between the two
+    // is benign: at most one extra engine/module gets built and dropped.
+    if let Some(shared) = SHARED_ENGINE_MODULE.get() {
+        return Ok(shared);
+    }
+    let engine = Engine::default();
+    let wasm = embedded_cmg_worker_wasm()?;
+    let module = wasmtime::Module::from_binary(&engine, &wasm)?;
+    Ok(SHARED_ENGINE_MODULE.get_or_init(|| (engine, module)))
 }
 
 impl CmgRuntime {
